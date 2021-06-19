@@ -1,0 +1,278 @@
+import requests
+import csv
+import datetime
+import pathlib
+from bs4 import BeautifulSoup
+import lxml
+
+DATE_TODAY = datetime.date.today()
+
+FRED_API_KEY = '4f342a0b6605ae18e3fbf11e74470252'
+QUANDL_API_KEY = 'yVvSKhL1axU1PjYjmRZb'
+FREQUENCY_M = 'm'
+FREQUENCY_Q = 'q'
+OBSERVATION_START = "1967-01-01"
+FRED_OB_LIMIT = 100000
+FRED_OB_ORD = 'asc'
+
+
+class MONTHLY_SERIES_QUANDL_ID:
+    SANDP_500_REAL = 'MULTPL/SP500_REAL_PRICE_MONTH.json'
+    CONSUMER_SENTIMENT = 'UMICH/SOC1.json'
+
+
+class MONTHLY_SERIES_ID:
+    EFFECTIVE_FED_FUND_RATE = 'FEDFUNDS'  # FRED
+    UNEMPLOYMENT_RATE = 'UNRATE'  # FRED
+    CONSUMER_PRICE_INDEX_FOR_ALL_URBAN_CONSUMERS = 'CPIAUCSL'  # FRED
+    INDUSTRIAL_PRODUCTION_INDEX = 'INDPRO'  # FRED
+    HOUSING_STARTS = 'HOUST'
+    SANDP_500 = 'SP500'  # FRED
+
+
+class QUARTERLY_SERIES_ID:
+    RGDP = 'GDPC1'  # FRED
+
+class Y_CHARTS_URL:
+    UMCSENT = "https://ycharts.com/indicators/us_consumer_sentiment_index"
+
+class MONTHLY_SPREAD_SERIES_ID:
+    BAA_CORP_BOND = 'BAA'  # FRED
+    AAA_CORP_BOND = 'AAA'  # FRED
+    TEN_YEAR_CONST_MATURITY_RATE = 'DGS10'  # FRED
+    ONE_YEAR_CONST_MATURITY_RATE = 'DGS1'  # FRED
+
+convertFREDRequestListToObservationJSON = lambda o: o.json()['observations']
+getCurrFREDObservationList = lambda ob_idx: lambda o: o[ob_idx]['value'] if ob_idx < len(o) and o[ob_idx]['value'] != '.' else ''
+getQUANDLData = lambda q: q.json()['dataset']['data']
+
+def FREDAPIGET(serieID, apiKey, frequency, limit = FRED_OB_LIMIT, sort_order = FRED_OB_ORD, obStart = OBSERVATION_START):
+    parameters = {
+        'series_id': serieID,
+        'api_key': apiKey,
+        'file_type': 'json',
+        'frequency': frequency,
+        'observation_start': obStart,
+        'limit': limit,
+        'sort_order': sort_order
+    }
+    FREDapiBaseURL = 'https://api.stlouisfed.org/fred/series/observations'
+
+    req = requests.get(FREDapiBaseURL, params=parameters)
+    return req
+
+
+def QUANDLAPIGET(serieID, apiKey, obStart=OBSERVATION_START, obEnd=False):
+
+    QUANDLapiBaseURL = 'https://www.quandl.com/api/v3/datasets/'
+    parameters = {
+        'api_key': apiKey,
+        'start_date': obStart,
+        'order': 'asc'
+    }
+
+    if obEnd: parameters['end_date'] = obEnd
+
+    req = requests.get(QUANDLapiBaseURL + serieID, params=parameters)
+
+    return req
+
+def pack_month_string(m):
+    m_int = int(m)
+    if m_int <= 9:
+        return '0' + str(m_int)
+    else:
+        return str(m_int)
+
+def increment_month_string(m):
+    m_int = int(m)
+    if m_int <= 8:
+        return '0' + str(m_int + 1)
+    else:
+        return str(m_int + 1)
+
+def increment_month_date(year_month):
+    month_string = year_month[5:7]
+    if (year_month[5:7] == '12'):
+        return str(int(year_month[:4]) + 1) + '-01'
+    return year_month[:4] + '-' + increment_month_string(month_string)
+
+
+def process_consumer_sentiment(QUANDL_req, latest_scraped_values_dict):
+    consumer_sentinment_data = getQUANDLData(QUANDL_req)
+    d = {cs[0][:7]: cs[1] for cs in consumer_sentinment_data}
+    for v in list(latest_scraped_values_dict.keys()):
+        if v is not None:
+            d[v] = latest_scraped_values_dict[v]
+
+    def get_consumer_sentiment(year_month):
+        """Expecting in the form of yyyy-mm """
+        if year_month == (str(DATE_TODAY.year) + '-' + pack_month_string(DATE_TODAY.month)) and year_month not in d:
+            return ''
+        elif year_month not in d:
+            return '#NA'
+        return d[year_month]
+
+    return get_consumer_sentiment, len(d)
+
+
+def process_SANDP500(QUANDL_req, FRED_req):
+    SANDP_Q_data = getQUANDLData(QUANDL_req)
+    d = {sp[0][:7]: str(sp[1]) for sp in SANDP_Q_data if str(sp[0])[8:10] == '01'}
+    FRED_data = convertFREDRequestListToObservationJSON(FRED_req)
+
+    for sp in FRED_data:
+        if sp['value'] != '.':
+            d[sp['date'][:7]] = sp['value']
+
+    def get_SANDP_index(year_month):
+        """Expecting in the form of yyyy-mm """
+        if year_month not in d: return '#NA'
+        return d[year_month]
+
+    return get_SANDP_index, len(d)
+
+def get_latest_consumer_sentiment_values():
+    # Web scraping the latest value of consumer sentiment
+    latest_consumer_sentiment_date = latest_consumer_sentiment_value = second_latest_consumer_sentiment_date = second_latest_consumer_sentiment_value = None
+    try:
+        consumer_sentiment_req = requests.get(Y_CHARTS_URL.UMCSENT).text
+        soup = BeautifulSoup(consumer_sentiment_req, 'lxml')
+        data_panel = soup.findAll('div', class_='panel panel-data')
+        for d in data_panel:
+            if 'Historical Data' in d.text:
+                data_table = d.find('table', class_='table').find_all('tr')
+                try:
+                    latest_consumer_sentiment_date = str(datetime.datetime.strptime(data_table[1].find('td').text, '%B %d, %Y'))[:7]
+                    latest_consumer_sentiment_value = str(float(data_table[1].find('td', class_='text-right').text))
+                except:
+                    latest_consumer_sentiment_date = latest_consumer_sentiment_value = None
+
+                try:
+                    second_latest_consumer_sentiment_date = str(datetime.datetime.strptime(data_table[2].find('td').text, '%B %d, %Y'))[:7]
+                    second_latest_consumer_sentiment_value = str(float(data_table[2].find('td', class_='text-right').text))
+                except:
+                    second_latest_consumer_sentiment_date = second_latest_consumer_sentiment_value = None
+                break
+    except:
+        pass
+    return {
+        latest_consumer_sentiment_date: latest_consumer_sentiment_value,
+        second_latest_consumer_sentiment_date: second_latest_consumer_sentiment_value
+    }
+
+
+def get_latest_monthly_average_for_spread_data(latest_spread_value_list):
+    def do_latest_average(obs_list):
+        def divide(n, d):
+            return n / d if d else 0
+
+        anchor_month = obs_list[0]['date'][:7]
+        sum = 0
+        i = 0
+        while obs_list[i]['date'][:7] == anchor_month:
+            try:
+                sum += float(obs_list[i]['value'])
+                i += 1
+            except:
+                pass
+
+        return round(divide(sum, i), 2)
+
+    BAA_CORP_B_req = FREDAPIGET("D" + MONTHLY_SPREAD_SERIES_ID.BAA_CORP_BOND, FRED_API_KEY, "d", "35", 'desc')
+    AAA_CORP_B_req = FREDAPIGET("D" + MONTHLY_SPREAD_SERIES_ID.AAA_CORP_BOND, FRED_API_KEY, "d", "35", 'desc')
+    TEN_M_R_req = FREDAPIGET(MONTHLY_SPREAD_SERIES_ID.TEN_YEAR_CONST_MATURITY_RATE, FRED_API_KEY, "d", "35", 'desc')
+    ONE_M_R_req = FREDAPIGET(MONTHLY_SPREAD_SERIES_ID.ONE_YEAR_CONST_MATURITY_RATE, FRED_API_KEY, "d", "35", 'desc')
+    FRED_daily_spread_obs = list(map(convertFREDRequestListToObservationJSON, [BAA_CORP_B_req, AAA_CORP_B_req, TEN_M_R_req, ONE_M_R_req]))
+
+    doesSpreadContainThisMonthsObs = list(map(lambda x,y: x['date'][:7] == y[0]['date'][:7] and x['value'] != '.', latest_spread_value_list, FRED_daily_spread_obs))
+
+    ret_list = []
+
+    for idx in range(len(doesSpreadContainThisMonthsObs)):
+        if not doesSpreadContainThisMonthsObs[idx]:
+            ret_list.append(do_latest_average(FRED_daily_spread_obs[idx]))
+        else:
+            ret_list.append('')
+
+    return ret_list
+
+
+def scrape_data():
+    # Monthly Data
+    FEDFUNDS_req = FREDAPIGET(MONTHLY_SERIES_ID.EFFECTIVE_FED_FUND_RATE, FRED_API_KEY, FREQUENCY_M)
+    UNRATE_req = FREDAPIGET(MONTHLY_SERIES_ID.UNEMPLOYMENT_RATE, FRED_API_KEY, FREQUENCY_M)
+    CPIAUCSL_req = FREDAPIGET(MONTHLY_SERIES_ID.CONSUMER_PRICE_INDEX_FOR_ALL_URBAN_CONSUMERS, FRED_API_KEY, FREQUENCY_M)
+    INDPRO_req = FREDAPIGET(MONTHLY_SERIES_ID.INDUSTRIAL_PRODUCTION_INDEX, FRED_API_KEY, FREQUENCY_M)
+    HOUST_req = FREDAPIGET(MONTHLY_SERIES_ID.HOUSING_STARTS, FRED_API_KEY, FREQUENCY_M)
+    SP500_req = FREDAPIGET(MONTHLY_SERIES_ID.SANDP_500, FRED_API_KEY, FREQUENCY_M)
+
+    UMCSENT_QUANDL_req = QUANDLAPIGET(MONTHLY_SERIES_QUANDL_ID.CONSUMER_SENTIMENT, QUANDL_API_KEY, OBSERVATION_START)
+    SP500_QUANDL_req = QUANDLAPIGET(MONTHLY_SERIES_QUANDL_ID.SANDP_500_REAL, QUANDL_API_KEY, OBSERVATION_START)
+
+    # Monthly Spread Data
+    BAA_CORP_B_req = FREDAPIGET(MONTHLY_SPREAD_SERIES_ID.BAA_CORP_BOND, FRED_API_KEY, FREQUENCY_M)
+    AAA_CORP_B_req = FREDAPIGET(MONTHLY_SPREAD_SERIES_ID.AAA_CORP_BOND, FRED_API_KEY, FREQUENCY_M)
+    TEN_M_R_req = FREDAPIGET(MONTHLY_SPREAD_SERIES_ID.TEN_YEAR_CONST_MATURITY_RATE, FRED_API_KEY, FREQUENCY_M)
+    ONE_M_R_req = FREDAPIGET(MONTHLY_SPREAD_SERIES_ID.ONE_YEAR_CONST_MATURITY_RATE, FRED_API_KEY, FREQUENCY_M)
+
+    # Quarterly Data
+    RGDP_req = FREDAPIGET(QUARTERLY_SERIES_ID.RGDP, FRED_API_KEY, FREQUENCY_Q)
+
+
+    rel_path = str(pathlib.Path(__file__).parent.parent.parent.parent) + '/'
+
+    FRED_monthly_data = [FEDFUNDS_req, UNRATE_req, CPIAUCSL_req, INDPRO_req, HOUST_req]
+    FRED_monthly_spread_data = [BAA_CORP_B_req, AAA_CORP_B_req, TEN_M_R_req, ONE_M_R_req]
+    FRED_quarterly_data = [RGDP_req]
+    # check whether or not a successful GET call
+    for v in (FRED_monthly_data + FRED_monthly_spread_data + FRED_quarterly_data + [UMCSENT_QUANDL_req, SP500_QUANDL_req]):
+        if v.status_code != 200:
+            with open(rel_path + 'monthly_data.csv', 'w', newline='') as monthly_csv:
+                writer = csv.writer(monthly_csv)
+                writer.writerow(["REST GET CALL ERROR"])
+            with open(rel_path + 'monthly_spread_data.csv', 'w', newline='') as monthly_spread_csv:
+                writer = csv.writer(monthly_spread_csv)
+                writer.writerow(["REST GET CALL ERROR"])
+            with open(rel_path + 'quarterly_data.csv', 'w', newline='') as quarterly_csv:
+                writer = csv.writer(quarterly_csv)
+                writer.writerow(["REST GET CALL ERROR"])
+
+
+    FRED_monthly_data_observations = list(map(convertFREDRequestListToObservationJSON, FRED_monthly_data))
+    FRED_monthly_spread_observations = list(map(convertFREDRequestListToObservationJSON, FRED_monthly_spread_data))
+    FRED_quarterly_data_observations = list(map(convertFREDRequestListToObservationJSON, FRED_quarterly_data))
+
+    with open(rel_path + 'monthly_data.csv', 'w', newline='') as monthly_csv:
+        get_consumer_sentiment_by_year_month = process_consumer_sentiment(UMCSENT_QUANDL_req, get_latest_consumer_sentiment_values())
+        get_SANDP500_index_by_year_month = process_SANDP500(SP500_QUANDL_req, SP500_req)
+        curr_year_month = OBSERVATION_START[:7]
+        writer = csv.writer(monthly_csv)
+        for obs_idx in range(max([len(ds) for ds in FRED_monthly_data_observations] +
+                                 [get_consumer_sentiment_by_year_month[1], get_SANDP500_index_by_year_month[1]])):
+
+            writer.writerow(list(map(getCurrFREDObservationList(obs_idx), FRED_monthly_data_observations[:1])) +
+                            [get_consumer_sentiment_by_year_month[0](curr_year_month)] + list(
+                map(getCurrFREDObservationList(obs_idx), FRED_monthly_data_observations[1:])) +
+                            [get_SANDP500_index_by_year_month[0](curr_year_month)])
+            curr_year_month = increment_month_date(curr_year_month)
+
+    with open(rel_path + 'monthly_spread_data.csv', 'w', newline='') as monthly_spread_csv:
+        writer = csv.writer(monthly_spread_csv)
+        observation_length = max(len(ds) for ds in (FRED_monthly_spread_observations))
+        for obs_idx in range(observation_length):
+            curr_row = list(map(getCurrFREDObservationList(obs_idx), FRED_monthly_spread_observations))
+            if not '' in curr_row:
+                writer.writerow(curr_row)
+
+        writer.writerow(list(get_latest_monthly_average_for_spread_data(
+            list(map(lambda ob_list: ob_list[-1], FRED_monthly_spread_observations)))))
+
+
+    with open(rel_path + 'quarterly_data.csv', 'w', newline='') as quarterly_csv:
+        writer = csv.writer(quarterly_csv)
+        for obs_idx in range(max(len(ds) for ds in (FRED_quarterly_data_observations))):
+            writer.writerow(list(map(getCurrFREDObservationList(obs_idx), FRED_quarterly_data_observations)))
+
+scrape_data()
+
