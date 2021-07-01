@@ -128,9 +128,13 @@ def process_SANDP500():
     s_data = s_and_p.history(period="max")
     s_data = s_data.Close
     def get_sandp_by_year_month(obs_date):
-        curr_month = s_data[obs_date]
-        if obs_date == str(DATE_TODAY)[:7] and not str(DATE_TODAY)[8:] == str(calendar.monthrange(int(str(DATE_TODAY)[:4]), int(str(DATE_TODAY)[5:7]))[1]): return ''
-        return curr_month[curr_month.last_valid_index()]
+        if (obs_date == str(DATE_TODAY)[:7] and \
+                str(DATE_TODAY)[8:] != str(calendar.monthrange(int(str(DATE_TODAY)[:4]), int(str(DATE_TODAY)[5:7]))[1])): return ''
+        try:
+            curr_month = s_data[obs_date]
+            return curr_month[curr_month.last_valid_index()]
+        except KeyError:
+            return ''
 
     return get_sandp_by_year_month
 
