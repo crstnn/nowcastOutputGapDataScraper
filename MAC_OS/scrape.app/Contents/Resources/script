@@ -122,12 +122,12 @@ def process_consumer_sentiment(QUANDL_req, latest_scraped_values_dict):
 
     return get_consumer_sentiment, len(d)
 
-
 def process_SANDP500():
     s_and_p = yf.Ticker('^GSPC')
     s_data = s_and_p.history(period="max")
     s_data = s_data.Close
     def get_sandp_by_year_month(obs_date):
+
         if (obs_date == str(DATE_TODAY)[:7] and \
                 str(DATE_TODAY)[8:] != str(calendar.monthrange(int(str(DATE_TODAY)[:4]), int(str(DATE_TODAY)[5:7]))[1])): return ''
         try:
@@ -253,6 +253,7 @@ def scrape_data():
         get_s_and_p_500_by_str_date = process_SANDP500()
         curr_year_month = OBSERVATION_START[:7]
         writer = csv.writer(monthly_csv)
+
 
         for obs_idx in range(((int(str(DATE_TODAY)[:4])-int(str(OBSERVATION_START)[:4]))*12 + int(str(DATE_TODAY)[5:7]))):
             writer.writerow(list(map(getCurrFREDObservationList(obs_idx), FRED_monthly_data_observations[:1])) +
